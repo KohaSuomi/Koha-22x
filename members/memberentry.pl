@@ -116,6 +116,18 @@ foreach my $id ( @delete_guarantor ) {
     $r->delete() if $r;
 }
 
+#Search existing guarantor id(s) and new ones from params
+my @guarantors;
+my @new_guarantor_ids = grep { $_ ne '' } $input->multi_param('new_guarantor_id');
+
+foreach my $new_guarantor_id (@new_guarantor_ids) {
+    my $new_guarantor = Koha::Patrons->find( { borrowernumber => $new_guarantor_id } );
+    push @guarantors, $new_guarantor;
+}
+
+my @existing_guarantors = $patron->guarantor_relationships()->guarantors->as_list unless !$patron;
+push @guarantors, @existing_guarantors;
+
 ## Deal with debarments
 $template->param(
     debarments => scalar GetDebarments( { borrowernumber => $borrowernumber } ),
@@ -263,6 +275,22 @@ if ( ( $op eq 'insert' ) and !$nodouble ) {
             push( @new_guarantors, $g );
         }
         $template->param( new_guarantors => \@new_guarantors );
+    }
+}
+
+#Check if guarantor requirements are met
+my $valid_guarantor = @guarantors ? @guarantors : $newdata{'contactname'};
+if ( C4::Context->preference('ChildNeedsGuarantor')
+    && $category->category_type eq 'C'
+    && !$valid_guarantor
+    && ( $op eq 'save' || $op eq 'insert' ) )
+{
+    push @errors, 'ERROR_child_no_guarantor';
+}
+
+foreach my $guarantor (@guarantors) {
+    if ( $guarantor->is_child && ( $op eq 'save' || $op eq 'insert' ) ) {
+        push @errors, 'ERROR_guarantor_is_guarantee';
     }
 }
 
@@ -429,7 +457,7 @@ if ((!$nok) and $nodouble and ($op eq 'insert' or $op eq 'save')){
 	if ($op eq 'insert'){
 		# we know it's not a duplicate borrowernumber or there would already be an error
         delete $newdata{password2};
-        $patron = eval { Koha::Patron->new(\%newdata)->store };
+        $patron = eval { Koha::Patron->new(\%newdata)->store({ guarantors => \@guarantors }) };
         if ( $@ ) {
             # FIXME Urgent error handling here, we cannot fail without relevant feedback
             # Lot of code will need to be removed from this script to handle exceptions raised by Koha::Patron->store
@@ -515,7 +543,7 @@ if ((!$nok) and $nodouble and ($op eq 'insert' or $op eq 'save')){
         delete $newdata{password2};
 
         eval {
-            $patron->set(\%newdata)->store if scalar(keys %newdata) > 1; # bug 4508 - avoid crash if we're not
+            $patron->set(\%newdata)->store({ guarantors => \@guarantors }) if scalar(keys %newdata) > 1; # bug 4508 - avoid crash if we're not
                                                                     # updating any columns in the borrowers table,
                                                                     # which can happen if we're only editing the
                                                                     # patron attributes or messaging preferences sections
